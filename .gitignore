@@ -2,9 +2,14 @@
 .venv/
 .idea/
 
-# Ignore output result and plot folders
-results_*/
-plots_*/
+# Ignore only large or temporary folders, not final results
+# Commenting out to track current results
+# results_*/
+# plots_*/
+
+# Keep CSVs and PNGs from results_ml2_final and plots_ml2_final
+!results_ml2_final/**
+!plots_ml2_final/**
 
 # Ignore generated data files
 *.csv
