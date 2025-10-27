@@ -3,7 +3,7 @@ Gradient and Crossfall Prediction Pipeline
 ------------------------------------------
 This script processes sensor-based JSON data, aggregates features per window,
 trains Random Forest models for gradient and crossfall prediction, and
-generates CSV predictions and plots.
+generates CSV predictions, plots, and evaluation metrics (RMSE, correlation).
 
 """
 import os
@@ -27,25 +27,16 @@ JSON_SECTION_MAP = {
     "10009~Juno App WW Geometry Test~Lonrix Test Videos~4518~video_7175345834.json": None
 }
 
-OUTPUT_RESULTS_DIR = "results_ml1_final"
-OUTPUT_PLOTS_DIR = "plots_ml1_final"
-WINDOW_SIZE = 50# number of JSON records per segment
+OUTPUT_RESULTS_DIR = "results_ml2_final"
+OUTPUT_PLOTS_DIR = "plots_ml2_final"
+WINDOW_SIZE = 50  # number of JSON records per segment
 
 os.makedirs(OUTPUT_RESULTS_DIR, exist_ok=True)
 os.makedirs(OUTPUT_PLOTS_DIR, exist_ok=True)
 
-
 # ------------------------ FUNCTIONS ------------------------
 def load_ground_truth(csv_path):
-    """
-    Load ground truth CSV containing section-wise gradient and crossfall.
-
-    Args:
-        csv_path (str): Path to CSV file
-
-    Returns:
-        pd.DataFrame: Ground truth dataframe with numeric gradients and crossfall
-    """
+    """Load and clean ground truth CSV."""
     print("Loading ground truth...")
     gt = pd.read_csv(csv_path)
     gt = gt.replace("00:00.0", 0)
@@ -58,15 +49,7 @@ def load_ground_truth(csv_path):
 
 
 def load_json_data(filepath):
-    """
-    Load sensor JSON data and extract mean accelerometer and gyro values per record.
-
-    Args:
-        filepath (str): Path to JSON file
-
-    Returns:
-        pd.DataFrame: Dataframe with features per record
-    """
+    """Load sensor JSON and extract mean accelerometer & gyro values per record."""
     with open(filepath, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -88,17 +71,7 @@ def load_json_data(filepath):
 
 
 def aggregate_features(df, start_section_id, window_size=WINDOW_SIZE):
-    """
-    Aggregate features over sliding windows and assign sequential section IDs.
-
-    Args:
-        df (pd.DataFrame): Raw JSON features
-        start_section_id (int): Starting sectionID for this dataset
-        window_size (int): Number of records per segment
-
-    Returns:
-        pd.DataFrame: Aggregated features with sectionID
-    """
+    """Aggregate features over windows and assign section IDs."""
     n_windows = ceil(len(df) / window_size)
     aggregated_list = []
 
@@ -124,16 +97,7 @@ def aggregate_features(df, start_section_id, window_size=WINDOW_SIZE):
 
 
 def train_models(gt_df, features_df):
-    """
-    Train Random Forest models for gradient and crossfall prediction.
-
-    Args:
-        gt_df (pd.DataFrame): Ground truth
-        features_df (pd.DataFrame): Aggregated feature dataframe
-
-    Returns:
-        tuple: (gradient_model, crossfall_model)
-    """
+    """Train Random Forest models for gradient and crossfall prediction."""
     feature_cols = ["accel_x", "accel_y", "accel_z", "gyro_z", "speed"]
     merged = pd.merge(features_df, gt_df, on="sectionID", how="inner")
     print(f"Training models with {len(merged)} merged samples.")
@@ -163,28 +127,56 @@ def train_models(gt_df, features_df):
 
 
 def predict_and_plot(model_grad, model_cross, features_df, gt_df, output_csv, prefix):
-    """
-    Make predictions and generate comparison plots for gradient and crossfall.
-
-    Args:
-        model_grad: Trained gradient model
-        model_cross: Trained crossfall model
-        features_df (pd.DataFrame): Aggregated features
-        gt_df (pd.DataFrame): Ground truth
-        output_csv (str): Path to save predictions
-        prefix (str): Plot title prefix
-    """
+    """Predict and plot results; compute RMSE and correlation."""
     feature_cols = ["accel_x", "accel_y", "accel_z", "gyro_z", "speed"]
     merged = pd.merge(features_df, gt_df, on="sectionID", how="left")
     X = merged[feature_cols].fillna(0)
 
+    # Predictions
     merged["pred_gradients"] = model_grad.predict(X)
     merged["pred_crossfall"] = model_cross.predict(X)
+
+    # Filter valid rows
+    valid_grad = merged.dropna(subset=["gradients"])
+    valid_cross = merged.dropna(subset=["crossfall"])
+
+    # Compute metrics
+    # grad_rmse = mean_squared_error(valid_grad["gradients"], valid_grad["pred_gradients"], squared=False)
+    grad_rmse = np.sqrt(mean_squared_error(valid_grad["gradients"], valid_grad["pred_gradients"]))
+
+
+    grad_corr = np.corrcoef(valid_grad["gradients"], valid_grad["pred_gradients"])[0, 1]
+
+    # cross_rmse = mean_squared_error(valid_cross["crossfall"], valid_cross["pred_crossfall"], squared=False)
+    cross_rmse = np.sqrt(mean_squared_error(valid_cross["crossfall"], valid_cross["pred_crossfall"]))
+
+    cross_corr = np.corrcoef(valid_cross["crossfall"], valid_cross["pred_crossfall"])[0, 1]
+
+    print(f"\n--- {prefix} ---")
+    print(f"Gradient → RMSE: {grad_rmse:.3f}, Corr: {grad_corr:.3f}")
+    print(f"Crossfall → RMSE: {cross_rmse:.3f}, Corr: {cross_corr:.3f}")
+
+    # Save results
     merged.to_csv(output_csv, index=False)
     print(f"Saved predictions to {output_csv}")
 
-    # Gradient plot
-    plt.figure(figsize=(12,5))
+    # Save metrics summary
+    metrics_path = os.path.join(OUTPUT_RESULTS_DIR, "metrics_summary.csv")
+    metrics_df = pd.DataFrame([{
+        "file": prefix,
+        "gradient_rmse": grad_rmse,
+        "gradient_corr": grad_corr,
+        "crossfall_rmse": cross_rmse,
+        "crossfall_corr": cross_corr
+    }])
+
+    if os.path.exists(metrics_path):
+        metrics_df.to_csv(metrics_path, mode='a', header=False, index=False)
+    else:
+        metrics_df.to_csv(metrics_path, index=False)
+
+    # Plot gradient
+    plt.figure(figsize=(12, 5))
     plt.plot(merged["pred_gradients"], label="Predicted Gradient", color="blue")
     plt.plot(merged["gradients"], label="True Gradient", color="red", linestyle="--")
     plt.xlabel("Section ID")
@@ -196,8 +188,8 @@ def predict_and_plot(model_grad, model_cross, features_df, gt_df, output_csv, pr
     plt.savefig(os.path.join(OUTPUT_PLOTS_DIR, f"{prefix}_gradient_plot.png"), dpi=300)
     plt.close()
 
-    # Crossfall plot
-    plt.figure(figsize=(12,5))
+    # Plot crossfall
+    plt.figure(figsize=(12, 5))
     plt.plot(merged["pred_crossfall"], label="Predicted Crossfall", color="green")
     plt.plot(merged["crossfall"], label="True Crossfall", color="orange", linestyle="--")
     plt.xlabel("Section ID")
@@ -214,13 +206,11 @@ def predict_and_plot(model_grad, model_cross, features_df, gt_df, output_csv, pr
 def main():
     print("Starting ML Pipeline...\n")
 
-    # Load ground truth
     gt_df = load_ground_truth(GROUND_TRUTH_FILE)
-
     feature_list = []
     section_start = 1
 
-    # Process each JSON file
+    # Process JSON files
     for fname in JSON_SECTION_MAP.keys():
         fpath = os.path.join(DATA_DIR, fname)
         print(f"\nProcessing file: {fname}")
@@ -246,7 +236,7 @@ def main():
         print("Training failed. Exiting.")
         return
 
-    # Generate predictions and plots
+    # Predict and evaluate for each file
     for fname in JSON_SECTION_MAP.keys():
         fpath = os.path.join(DATA_DIR, fname)
         base = os.path.splitext(os.path.basename(fname))[0]
@@ -255,7 +245,8 @@ def main():
         out_csv = os.path.join(OUTPUT_RESULTS_DIR, f"{base}_pred.csv")
         predict_and_plot(model_grad, model_cross, agg_df, gt_df, out_csv, base)
 
-    print("\nPipeline finished successfully!")
+    print("\n Pipeline finished successfully! Check 'results_ml1_final' for CSVs and 'plots_ml1_final' for plots.")
+    print("Metrics summary saved in 'results_ml1_final/metrics_summary.csv'.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,11 @@
+# Ignore Python virtual environment and IDE files
+.venv/
+.idea/
+
+# Ignore output result and plot folders
+results_*/
+plots_*/
+
+# Ignore generated data files
+*.csv
+*.png
