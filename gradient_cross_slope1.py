@@ -1,9 +1,11 @@
 """
-Gradient and Crossfall Prediction Pipeline
-------------------------------------------
+Gradient and Crossfall Prediction Pipeline with Dummy Regressor Comparison
+--------------------------------------------------------------------------
 This script processes sensor-based JSON data, aggregates features per window,
-trains Random Forest models for gradient and crossfall prediction, and
-generates CSV predictions, plots, and evaluation metrics (RMSE, correlation).
+trains Random Forest models for gradient and crossfall prediction,
+and compares their performance with a Dummy Regressor baseline.
+
+Metrics include RMSE, Correlation Coefficient, and Relative RMSE (RRMSE).
 
 """
 import os
@@ -13,6 +15,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from math import ceil
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.dummy import DummyRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
 
@@ -27,8 +30,8 @@ JSON_SECTION_MAP = {
     "10009~Juno App WW Geometry Test~Lonrix Test Videos~4518~video_7175345834.json": None
 }
 
-OUTPUT_RESULTS_DIR = "results_ml2_final"
-OUTPUT_PLOTS_DIR = "plots_ml2_final"
+OUTPUT_RESULTS_DIR = "results_final"
+OUTPUT_PLOTS_DIR = "plots_final"
 WINDOW_SIZE = 50  # number of JSON records per segment
 
 os.makedirs(OUTPUT_RESULTS_DIR, exist_ok=True)
@@ -104,7 +107,7 @@ def train_models(gt_df, features_df):
 
     if len(merged) < 5:
         print("Not enough samples for training.")
-        return None, None
+        return None, None, None, None
 
     X = merged[feature_cols]
     y_grad = merged["gradients"]
@@ -114,68 +117,59 @@ def train_models(gt_df, features_df):
         X, y_grad, y_cross, test_size=0.3, random_state=42
     )
 
+    # --- Random Forest Models ---
     model_grad = RandomForestRegressor(n_estimators=100, random_state=42)
     model_cross = RandomForestRegressor(n_estimators=100, random_state=42)
 
     model_grad.fit(X_train, y_grad_train)
     model_cross.fit(X_train, y_cross_train)
 
-    print(f"Gradient MSE: {mean_squared_error(y_grad_test, model_grad.predict(X_test)):.3f}")
-    print(f"Crossfall MSE: {mean_squared_error(y_cross_test, model_cross.predict(X_test)):.3f}")
+    # --- Dummy Regressors (Baseline) ---
+    dummy_grad = DummyRegressor(strategy="mean")
+    dummy_cross = DummyRegressor(strategy="mean")
+    dummy_grad.fit(X_train, y_grad_train)
+    dummy_cross.fit(X_train, y_cross_train)
 
-    return model_grad, model_cross
+    # Predictions for baseline
+    y_grad_pred = model_grad.predict(X_test)
+    y_cross_pred = model_cross.predict(X_test)
+    y_grad_dummy = dummy_grad.predict(X_test)
+    y_cross_dummy = dummy_cross.predict(X_test)
+
+    # Compute RMSE
+    grad_rmse = np.sqrt(mean_squared_error(y_grad_test, y_grad_pred))
+    cross_rmse = np.sqrt(mean_squared_error(y_cross_test, y_cross_pred))
+    dummy_grad_rmse = np.sqrt(mean_squared_error(y_grad_test, y_grad_dummy))
+    dummy_cross_rmse = np.sqrt(mean_squared_error(y_cross_test, y_cross_dummy))
+
+    # Compute Relative RMSE (RRMSE)
+    grad_rrmse = grad_rmse / dummy_grad_rmse
+    cross_rrmse = cross_rmse / dummy_cross_rmse
+
+    # Correlations
+    grad_corr = np.corrcoef(y_grad_test, y_grad_pred)[0, 1]
+    cross_corr = np.corrcoef(y_cross_test, y_cross_pred)[0, 1]
+
+    print("\n--- Model Evaluation ---")
+    print(f"Gradient: RMSE={grad_rmse:.3f}, Dummy RMSE={dummy_grad_rmse:.3f}, RRMSE={grad_rrmse:.3f}, Corr={grad_corr:.3f}")
+    print(f"Crossfall: RMSE={cross_rmse:.3f}, Dummy RMSE={dummy_cross_rmse:.3f}, RRMSE={cross_rrmse:.3f}, Corr={cross_corr:.3f}")
+
+    return model_grad, model_cross, (grad_rrmse, cross_rrmse), (grad_corr, cross_corr)
 
 
 def predict_and_plot(model_grad, model_cross, features_df, gt_df, output_csv, prefix):
-    """Predict and plot results; compute RMSE and correlation."""
+    """Predict, plot, and save model outputs."""
     feature_cols = ["accel_x", "accel_y", "accel_z", "gyro_z", "speed"]
     merged = pd.merge(features_df, gt_df, on="sectionID", how="left")
     X = merged[feature_cols].fillna(0)
 
-    # Predictions
     merged["pred_gradients"] = model_grad.predict(X)
     merged["pred_crossfall"] = model_cross.predict(X)
 
-    # Filter valid rows
-    valid_grad = merged.dropna(subset=["gradients"])
-    valid_cross = merged.dropna(subset=["crossfall"])
-
-    # Compute metrics
-    # grad_rmse = mean_squared_error(valid_grad["gradients"], valid_grad["pred_gradients"], squared=False)
-    grad_rmse = np.sqrt(mean_squared_error(valid_grad["gradients"], valid_grad["pred_gradients"]))
-
-
-    grad_corr = np.corrcoef(valid_grad["gradients"], valid_grad["pred_gradients"])[0, 1]
-
-    # cross_rmse = mean_squared_error(valid_cross["crossfall"], valid_cross["pred_crossfall"], squared=False)
-    cross_rmse = np.sqrt(mean_squared_error(valid_cross["crossfall"], valid_cross["pred_crossfall"]))
-
-    cross_corr = np.corrcoef(valid_cross["crossfall"], valid_cross["pred_crossfall"])[0, 1]
-
-    print(f"\n--- {prefix} ---")
-    print(f"Gradient → RMSE: {grad_rmse:.3f}, Corr: {grad_corr:.3f}")
-    print(f"Crossfall → RMSE: {cross_rmse:.3f}, Corr: {cross_corr:.3f}")
-
-    # Save results
     merged.to_csv(output_csv, index=False)
-    print(f"Saved predictions to {output_csv}")
+    print(f"Saved predictions → {output_csv}")
 
-    # Save metrics summary
-    metrics_path = os.path.join(OUTPUT_RESULTS_DIR, "metrics_summary.csv")
-    metrics_df = pd.DataFrame([{
-        "file": prefix,
-        "gradient_rmse": grad_rmse,
-        "gradient_corr": grad_corr,
-        "crossfall_rmse": cross_rmse,
-        "crossfall_corr": cross_corr
-    }])
-
-    if os.path.exists(metrics_path):
-        metrics_df.to_csv(metrics_path, mode='a', header=False, index=False)
-    else:
-        metrics_df.to_csv(metrics_path, index=False)
-
-    # Plot gradient
+    # --- Gradient Plot ---
     plt.figure(figsize=(12, 5))
     plt.plot(merged["pred_gradients"], label="Predicted Gradient", color="blue")
     plt.plot(merged["gradients"], label="True Gradient", color="red", linestyle="--")
@@ -188,7 +182,7 @@ def predict_and_plot(model_grad, model_cross, features_df, gt_df, output_csv, pr
     plt.savefig(os.path.join(OUTPUT_PLOTS_DIR, f"{prefix}_gradient_plot.png"), dpi=300)
     plt.close()
 
-    # Plot crossfall
+    # --- Crossfall Plot ---
     plt.figure(figsize=(12, 5))
     plt.plot(merged["pred_crossfall"], label="Predicted Crossfall", color="green")
     plt.plot(merged["crossfall"], label="True Crossfall", color="orange", linestyle="--")
@@ -204,13 +198,12 @@ def predict_and_plot(model_grad, model_cross, features_df, gt_df, output_csv, pr
 
 # -------------------------- MAIN PIPELINE --------------------------
 def main():
-    print("Starting ML Pipeline...\n")
+    print("Starting ML Pipeline with Dummy Regressor Comparison...\n")
 
     gt_df = load_ground_truth(GROUND_TRUTH_FILE)
     feature_list = []
     section_start = 1
 
-    # Process JSON files
     for fname in JSON_SECTION_MAP.keys():
         fpath = os.path.join(DATA_DIR, fname)
         print(f"\nProcessing file: {fname}")
@@ -230,23 +223,31 @@ def main():
 
     combined_features = pd.concat(feature_list, ignore_index=True)
 
-    # Train models
-    model_grad, model_cross = train_models(gt_df, combined_features)
+    model_grad, model_cross, (grad_rrmse, cross_rrmse), (grad_corr, cross_corr) = train_models(gt_df, combined_features)
     if not model_grad:
         print("Training failed. Exiting.")
         return
 
-    # Predict and evaluate for each file
+    metrics_summary = pd.DataFrame([{
+        "gradient_rrmse": grad_rrmse,
+        "crossfall_rrmse": cross_rrmse,
+        "gradient_corr": grad_corr,
+        "crossfall_corr": cross_corr
+    }])
+    metrics_summary.to_csv(os.path.join(OUTPUT_RESULTS_DIR, "metrics_summary.csv"), index=False)
+
+    # Predict and plot for each file
     for fname in JSON_SECTION_MAP.keys():
-        fpath = os.path.join(DATA_DIR, fname)
         base = os.path.splitext(os.path.basename(fname))[0]
+        fpath = os.path.join(DATA_DIR, fname)
         df = load_json_data(fpath)
         agg_df = aggregate_features(df, start_section_id=1)
         out_csv = os.path.join(OUTPUT_RESULTS_DIR, f"{base}_pred.csv")
         predict_and_plot(model_grad, model_cross, agg_df, gt_df, out_csv, base)
 
-    print("\n Pipeline finished successfully! Check 'results_ml1_final' for CSVs and 'plots_ml1_final' for plots.")
-    print("Metrics summary saved in 'results_ml1_final/metrics_summary.csv'.")
+    print("\n Pipeline completed successfully!")
+    print(f"Results saved in '{OUTPUT_RESULTS_DIR}', plots in '{OUTPUT_PLOTS_DIR}'.")
+    print("Metrics summary saved as 'metrics_summary.csv'.")
 
 
 if __name__ == "__main__":

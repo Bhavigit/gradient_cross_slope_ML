@@ -1,18 +1,31 @@
-# Ignore Python virtual environment and IDE files
+# Ignore Python virtual environments and IDE files
 .venv/
 .idea/
+__pycache__/
+*.pyc
+*.pkl
+*.log
 
-# Ignore temporary outputs
-# Commented out old ignores to allow tracking of final results
-# results_*/
-# plots_*/
+# Ignore data folder (large or sensitive)
+data/
 
-# Allow result folders
-!results_ml2_final/**
-!plots_ml2_final/**
+# Ignore temporary and compressed files
+*.zip
+*.rar
+*.tar
+*.gz
 
-# Ignore all other csv/png except in result folders
+# Ignore JSON files (video data, etc.)
+*.json
+
+# Ignore auto-generated results and plots folders (except the final ones)
+results_*/
+plots_*/
+
+# Allow final output folders to be tracked
+!results_final/
+!plots_final/
+
+# Ignore generated data files
 *.csv
 *.png
-!results_ml2_final/*.csv
-!plots_ml2_final/*.png
