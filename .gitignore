@@ -26,6 +26,3 @@ plots_*/
 !results_final/
 !plots_final/
 
-# Ignore generated data files
-*.csv
-*.png
